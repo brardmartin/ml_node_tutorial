@@ -1,0 +1,130 @@
+graphs:
+  - id: PubSubBroker
+    nodes:
+    # Allow communication between graphs
+    - id: Broker
+      module: timeflux.nodes.zmq
+      class: Broker
+
+  - id: Generate
+    nodes:
+    - id: carrier_sinus
+      module: timeflux_example.nodes.sinus
+      class: Sinus
+      params:
+        rate: 1
+        amplitude: 1
+    - id: noise_sinus
+      module: timeflux_example.nodes.sinus
+      class: Sinus
+      params:
+        rate: 10
+        amplitude: .1
+    - id: matrix_add
+      module: timeflux_example.nodes.arithmetic
+      class: MatrixAdd
+    - id: pub
+      module: timeflux.nodes.zmq
+      class: Pub
+      params:
+        topic: signal
+    edges:
+    - source: carrier_sinus
+      target: matrix_add:m1
+    - source: noise_sinus
+      target: matrix_add:m2
+    - source: matrix_add
+      target: pub
+    rate: 0
+
+  - id: Plot
+    nodes:
+    - id: sub
+      module: timeflux.nodes.zmq
+      class: Sub
+      params:
+        topics: [ signal, predictions ]
+    - id: monitor
+      module: timeflux_ui.nodes.ui
+      class: UI
+      params:
+        settings:
+          monitor:
+            events: [ calibration_starts, calibration_stops ]
+    - id: pub
+      module: timeflux.nodes.zmq
+      class: Pub
+      params:
+        topic: events
+    edges:
+      - source: sub:signal
+        target: monitor:signal
+      - source: sub:predictions
+        target: monitor:predictions
+      - source: monitor:events
+        target: pub
+    rate: 5
+
+
+  - id: Classify
+    nodes:
+    - id: sub
+      module: timeflux.nodes.zmq
+      class: Sub
+      params:
+        topics: [ signal, events ]
+    - id: window
+      module: timeflux.nodes.window
+      class: Window
+      params:
+        index: sample
+        length: 20 # nombre de samples par window
+        step: 1 # nombre de samples entre chaque window
+        epochs: true
+    - id: fit_predict
+      module: timeflux.nodes.ml
+      class: Pipeline
+      params:
+        meta_label: null
+        mode: predict
+        event_start_accumulation:  calibration_starts
+        event_stop_accumulation: calibration_stops
+        event_start_training: calibration_stops
+        steps:
+          - module: timeflux.estimators.transformers.shape
+            class: Reduce
+            args:
+                axis: 2
+          - module: utils
+            class: Slope
+          - module: sklearn.cluster
+            class: KMeans
+            args:
+              n_clusters: 2
+    - id: display
+      module: timeflux.nodes.debug
+      class: Display
+    - id: output
+      module: utils
+      class: Output
+    - id: pub
+      module: timeflux.nodes.zmq
+      class: Pub
+      params:
+        topic: predictions
+    edges:
+      - source: sub:signal
+        target: window
+      - source: sub:events
+        target: fit_predict:events
+      - source: window:*
+        target: fit_predict:training
+      - source: window:*
+        target: fit_predict
+      - source: fit_predict:events
+        target: display
+      - source: fit_predict:events
+        target: output
+      - source: output
+        target: pub
+    rate: 10
